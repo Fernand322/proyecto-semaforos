@@ -8,11 +8,11 @@ SX127XLT LT;                                    //create a library class instanc
 #define NRESET 9                                //reset pin on LoRa device
 #define DIO0 2                                  //DIO0 pin on LoRa device, used for sensing RX and TX done 
 #define LORA_DEVICE DEVICE_SX1278               //we need to define the device we are using
-#define TXpower 17                              //LoRa transmit power in dBm
+#define TXpower 17 
 
 //ACA SETEO TODO LO DE RECEPCION
 
-#define RXtimeout 10000                         //receive timeout in mS.  
+#define RXtimeout 1000                         //receive timeout in mS.  
 
 const uint8_t RXBUFFER_SIZE = 251;              //RX buffer size, set to max payload length of 251, or maximum expected payload length
 uint8_t RXBUFFER[RXBUFFER_SIZE];                //create the buffer that received packets are copied into
@@ -28,65 +28,16 @@ uint16_t TransmitterNetworkID;                  //the NetworkID from the transmi
 const uint16_t NetworkID = 0x3210;              //NetworkID identifies this connection, needs to match value in transmitter
 const uint16_t NetworkID2 = 0x3211;
 
-//ACA SETEO TODO LO DE EMISOR
 
+const int ledPin = 13;      // Pin del LED
+const int sensorPin = A0;   // Pin del sensor analógico
 
-void loop()
-{
-  Serial.print(F("Entro en el loop"));
-  Serial.flush();
-
-  //LT.printASCIIPacket(RXBUFFER, sizeof(RXBUFFER));                        //print the buffer (the sent packet) as ASCII
-
-  /* //Transmit a packet
-  if (!LT.transmit(RXBUFFER, sizeof(RXBUFFER), 10000, TXpower, WAIT_TX))  //will return 0 if transmit error
-  {
-    Serial.print(F("FALLO LA TRANSMICION!"));
-    LT.printIrqStatus();                                          //print IRQ status, indicates why packet transmit fail
-    Serial.println();
-  } */
-
-  Serial.println();
-  Serial.print(F("ESPERANDO ALGUN PAQUETE..."));
-  Serial.println();
-
-  //ACA ESTA EL RECEPTOR
-  if (LT.receiveReliable(RXBUFFER, RXBUFFER_SIZE, NetworkID, RXtimeout, WAIT_RX))      //wait for a packet to arrive with 2 second (2000mS) timeout
-  {
-    RXPacketL = LT.readRXPacketL();               //get the received packet length
-    RXPayloadL = RXPacketL - 4;                   //payload length is always 4 bytes less than packet length
-    PacketRSSI = LT.readPacketRSSI();             //read the received packets RSSI value
-    packet_is_OK();
-    Serial.println();
-
-
-    //COMO SE RECIBIO OKEY SE VA A TRANSMITIR EL PAQUETE
-    Serial.print(F("Se intenta transmitir"));
-
-    strcat((char*)RXBUFFER, NetworkID2);
-
-    if(LT.transmitReliable(RXBUFFER, RXPayloadL, NetworkID2, RXtimeout, TXpower, WAIT_TX)){
-      Serial.print(F("Se envio con exito la cosa"));
-    }
-
-  }
-  else
-  {
-    Serial.print(F("FALLO LA RECEPCION!"));
-    LT.printIrqStatus();                                          //print IRQ status, why did packet receive fail
-    Serial.println();
-  }
-
-  Serial.println();
-  delay(500);                                                     //have a delay between packets
-}
-
+unsigned long previousMillisLED = 0;      // Almacena el tiempo de la última actualización del LED
+const long intervalLED = 1000;            // Intervalo para parpadear el LED (1 segundo)
 
 void setup()
 {
   Serial.begin(115200);
-  Serial.println();
-  Serial.println(F("Lora que envia y recibe"));
 
   SPI.begin();
 
@@ -103,11 +54,50 @@ void setup()
 
   LT.setupLoRa(434000000, 0, LORA_SF7, LORA_BW_125, LORA_CR_4_5, LDRO_AUTO); //configure frequency and LoRa settings
 
+  pinMode(ledPin, OUTPUT);
+
   Serial.print(F("Lora configurado!"));
   Serial.println();
   Serial.println();
 }
 
+void loop() {
+  unsigned long currentMillis = millis();
+
+  // Tarea continua: leer el sensor y mostrar el valor
+  Serial.println(F("Esperando algun paquete..."));
+  if (LT.receiveReliable(RXBUFFER, RXBUFFER_SIZE, NetworkID, RXtimeout, WAIT_RX))      //Espera el paquete por el tiempo del RXTimeout
+    {
+      RXPacketL = LT.readRXPacketL();               //get the received packet length
+      RXPayloadL = RXPacketL - 4;                   //payload length is always 4 bytes less than packet length
+      PacketRSSI = LT.readPacketRSSI();             //read the received packets RSSI value
+      packet_is_OK();
+      Serial.println();
+
+
+      //COMO SE RECIBIO OKEY SE VA A TRANSMITIR EL PAQUETE
+      Serial.print(F("Se intenta transmitir"));
+
+      strcat((char*)RXBUFFER, NetworkID2);
+
+      if(LT.transmitReliable(RXBUFFER, RXPayloadL, NetworkID2, RXtimeout, TXpower, WAIT_TX)){
+        Serial.print(F("Se envio con exito la cosa"));
+      }
+
+    }
+    else
+    {
+      Serial.print(F("No se pudo recibir nada: "));
+      LT.printIrqStatus();                                          //print IRQ status, why did packet receive fail
+      Serial.println();
+    }
+
+    // Tarea con delay: manejar parpadeo del LED
+    if (currentMillis - previousMillisLED >= intervalLED) {
+      Serial.println(F("Entro a la otra funcion"));
+      Serial.println(F(""));
+    }
+}
 
 void packet_is_OK()
 {
