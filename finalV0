@@ -1,0 +1,237 @@
+#include <TaskScheduler.h>
+#include <SPI.h>
+#include <SX127XLT.h>
+#include <string.h>
+#include "ACS712-SOLDERED.h"
+#include <SoftwareSerial.h>
+#include <TinyGPS++.h>
+
+SX127XLT LT;
+
+#define NSS 10
+#define NRESET 9
+#define DIO0 2
+#define LORA_DEVICE DEVICE_SX1278
+#define TXpower 17
+#define RXtimeout 1000
+
+#define SENSOR_PIN A0        // Pin analógico donde está conectado el ACS712
+#define NUM_SAMPLES 100      // Número de muestras para promediado
+#define BURN_THRESHOLD 0.05  // Umbral para detectar una lámpara quemada (ajustar según necesidad)
+
+const uint8_t RXBUFFER_SIZE = 251;
+uint8_t RXBUFFER[RXBUFFER_SIZE];
+uint8_t TXBUFFER[RXBUFFER_SIZE];
+uint8_t RXPacketL;
+uint8_t RXPayloadL;
+uint8_t TXPayloadL;
+const uint16_t NetworkID = 0x3211;
+const uint16_t NetworkID2 = 0x3212;
+
+Scheduler runner;
+
+void loop1Callback();
+void loop3Callback();
+
+Task task1(0, TASK_FOREVER, &loop1Callback);
+/* Task task3(1000, TASK_FOREVER, &loop3Callback); */
+
+
+ACS712 ACS1(A0, ACS712_5A);
+ACS712 ACS2(A1, ACS712_5A);
+ACS712 ACS3(A2, ACS712_5A);
+
+bool envRojo = false;
+bool envAmarillo = false;
+bool envVerde = false;
+
+const unsigned long tiempoEspera = 50000;
+unsigned long tiempoTranscurrido;
+unsigned long tiempoActual;
+unsigned long tiempoInicio;
+
+// Definir pines para el GPS
+SoftwareSerial gpsSerial(4, 3);  // RX, TX
+TinyGPSPlus gps;
+
+// Inicializar el sensor ACS712 en el pin especificado y en el rango correcto ---------------------------------------------
+ACS712 sensor(SENSOR_PIN, ACS712_5A);
+
+// Variables globales para almacenar los promedios de corriente
+float currentOn, currentOff;
+
+long totalSecond = 0;
+
+void setup() {
+  Serial.begin(115200);
+  SPI.begin();
+  while (!Serial) {
+    ;
+  }
+
+  gpsSerial.begin(9600);
+
+  if (LT.begin(NSS, NRESET, DIO0, LORA_DEVICE)) {
+    Serial.println(F("El dispositivo arranco bien!"));
+    delay(1000);
+  } else {
+    Serial.println(F("No se pudo arrancar..."));
+    while (1)
+      ;
+  }
+
+  LT.setupLoRa(434000000, 0, LORA_SF7, LORA_BW_125, LORA_CR_4_5, LDRO_AUTO);
+
+  Serial.print(F("Lora configurado!"));
+  Serial.println();
+  Serial.println();
+
+  Serial.println("Iniciando tareas...");
+
+  runner.init();
+  runner.addTask(task1);
+  /*   runner.addTask(task3); */
+  task1.enable();
+  /* task3.enable(); */
+
+  // Calcular el promedio de corriente con las lámparas apagadas
+  currentOff = measureCurrent();
+  Serial.print("Promedio de corriente (Lámparas apagadas): ");
+  Serial.print(currentOff);
+  Serial.println(" A");
+  delay(10000);
+  // Calcular el promedio de corriente con las lámparas encendidas
+  currentOn = measureCurrent();
+
+  // Ajustar según sea necesario
+  Serial.print("Promedio de corriente (Lámparas encendidas): ");
+  Serial.print(currentOn);
+  Serial.println(" A");
+  delay(5000);
+
+  Serial.println("Tareas habilitadas.");
+}
+
+void loop() {
+  runner.execute();
+}
+
+void loop1Callback() {
+
+  updateGPS();
+
+  if (LT.receiveReliable(RXBUFFER, RXBUFFER_SIZE, NetworkID, 250, WAIT_RX)) {
+    RXPacketL = LT.readRXPacketL();
+    RXPayloadL = RXPacketL - 4;
+    packet_is_OK();
+    Serial.println();
+
+    Serial.print("Hora en Argentina: ");
+    Serial.println(getArgentinaTime());
+
+    strcat((char*)RXBUFFER, (char*)&NetworkID2);
+
+    if (LT.transmitReliable(RXBUFFER, RXPayloadL, NetworkID2, 10, TXpower, WAIT_TX)) {
+      Serial.print(F("Se envio con exito la cosa"));
+      Serial.println();
+    }
+  }
+
+  // Medir la corriente actual
+  float current = measureCurrentNow();
+  //Serial.println(current);
+  if (getArgentinaTimeInSeconds() - totalSecond > 5) {
+    envRojo = false;
+  }
+
+ // Serial.println(getArgentinaTimeInSeconds() - totalSecond);
+
+
+  if (current > currentOff + BURN_THRESHOLD && envRojo == false) {
+    if (current < currentOn - BURN_THRESHOLD) {
+      Serial.println("Estado: Una lámpara quemada.");
+      totalSecond = getArgentinaTimeInSeconds();
+    } else {
+      Serial.println("Estado: Ambas lámparas encendidas.");
+      totalSecond = getArgentinaTimeInSeconds();
+    }
+    envRojo = true;
+  }
+}
+
+
+// Función para actualizar datos del GPS
+void updateGPS() {
+  while (gpsSerial.available() > 0) {
+    gps.encode(gpsSerial.read());
+  }
+}
+
+// Función para obtener la hora en Argentina
+String getArgentinaTime() {
+  if (gps.time.isValid()) {
+    // Obtener hora UTC del GPS
+    int hour = gps.time.hour();
+    int minute = gps.time.minute();
+    int second = gps.time.second();
+
+    // Ajustar a la hora de Argentina (UTC-3)
+    hour = (hour - 3 + 24) % 24;
+
+    long totalSeconds = hour * 3600 + minute * 60 + second;
+
+    // Formatear la hora con ceros a la izquierda si es necesario
+    char buffer[10];
+    snprintf(buffer, sizeof(buffer), "%02d:%02d:%02d", hour, minute, second);
+
+    return String(buffer);
+  } else {
+    return "Hora no válida";
+  }
+}
+
+long getArgentinaTimeInSeconds() {
+  if (gps.time.isValid()) {
+    // Obtener hora UTC del GPS
+    int hour = gps.time.hour();
+    int minute = gps.time.minute();
+    int second = gps.time.second();
+
+    // Ajustar a la hora de Argentina (UTC-3)
+    hour = (hour - 3 + 24) % 24;
+
+    long totalSeconds = hour * 3600 + minute * 60 + second;
+
+    return totalSeconds;
+  } else {
+    return "Hora no válida";
+  }
+}
+
+
+float measureCurrentNow() {
+  float current = sensor.mA_AC() / 1000.0;
+  return current;
+}
+
+float measureCurrent() {
+  float currentSum = 0.0;
+  for (int i = 0; i < NUM_SAMPLES; i++) {
+    float current = sensor.mA_AC() / 1000.0;  // Obtener la corriente en Amperios
+    // Serial.println(current);
+    currentSum += current;
+    delay(10);  // Pequeña pausa para estabilizar las lecturas (ajustar según necesidad)
+  }
+  return currentSum / NUM_SAMPLES;
+}
+
+void packet_is_OK() {
+  Serial.print(F("PAYLOAD RECIBIDO OK"));
+  Serial.println();
+  LT.printASCIIPacket(RXBUFFER, RXPayloadL);
+
+  if (LT.getReliableConfig(NoReliableCRC)) {
+    Serial.println(F("Payload CRC check disabled"));
+  }
+  Serial.println();
+}
